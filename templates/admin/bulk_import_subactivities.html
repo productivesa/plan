@@ -1,0 +1,305 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block title %}Bulk Import Sub-Activities{% endblock %}
+
+{% block extrahead %}
+{{ block.super }}
+<style>
+.bulk-import-form {
+    max-width: 800px;
+    margin: 20px auto;
+    padding: 20px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+    color: #333;
+}
+
+.form-control {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    margin-right: 10px;
+    font-size: 14px;
+}
+
+.btn-primary {
+    background-color: #007cba;
+    color: white;
+}
+
+.btn-secondary {
+    background-color: #6c757d;
+    color: white;
+}
+
+.btn-success {
+    background-color: #28a745;
+    color: white;
+}
+
+.btn:hover {
+    opacity: 0.8;
+}
+
+.instructions {
+    background-color: #e3f2fd;
+    border: 1px solid #2196f3;
+    border-radius: 4px;
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+.instructions h3 {
+    margin-top: 0;
+    color: #1976d2;
+}
+
+.instructions ul {
+    margin: 10px 0;
+    padding-left: 20px;
+}
+
+.instructions li {
+    margin-bottom: 5px;
+}
+
+.warning {
+    background-color: #fff3cd;
+    border: 1px solid #ffeaa7;
+    color: #856404;
+    padding: 10px;
+    border-radius: 4px;
+    margin-bottom: 15px;
+}
+
+.file-upload-area {
+    border: 2px dashed #ddd;
+    border-radius: 4px;
+    padding: 30px;
+    text-align: center;
+    background-color: #fafafa;
+    margin-bottom: 20px;
+}
+
+.file-upload-area.dragover {
+    border-color: #007cba;
+    background-color: #e3f2fd;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="bulk-import-form">
+    <h1>{% trans "Bulk Import Sub-Activities" %}</h1>
+    
+    <div class="instructions">
+        <h3>Instructions for Bulk Import</h3>
+        <ul>
+            <li><strong>File Format:</strong> Upload CSV or Excel (.xlsx, .xls) files</li>
+            <li><strong>Required Columns:</strong> main_activity_name, name, activity_type, estimated_cost_with_tool, estimated_cost_without_tool, government_treasury, sdg_funding, partners_funding, other_funding</li>
+            <li><strong>Activity Types:</strong> Training, Meeting, Workshop, Printing, Supervision, Procurement, Other</li>
+            <li><strong>Budget Types:</strong> WITH_TOOL or WITHOUT_TOOL</li>
+            <li><strong>Validation:</strong> At least one estimated cost must be > 0, total funding cannot exceed estimated cost</li>
+            <li><strong>Main Activity Names:</strong> Use exact main activity names as they appear in the database (case-sensitive)</li>
+        </ul>
+        
+        <div style="margin-top: 15px;">
+            <a href="download-template/" class="btn btn-success">
+                📥 Download CSV Template
+            </a>
+            <a href="/api/sub-activities/bulk_import_instructions/" target="_blank" class="btn btn-secondary">
+                📋 View Detailed Instructions
+            </a>
+        </div>
+    </div>
+
+    <div class="warning">
+        <strong>⚠️ Important:</strong> 
+        <ul>
+            <li>Make sure main activity names exactly match existing main activities in your database</li>
+            <li>Main activity names are case-sensitive and must be exact matches</li>
+            <li>Use "Dry Run" first to preview before actual import</li>
+            <li>Large files may take some time to process</li>
+            <li>All sub-activities will be linked to the selected organization's main activities</li>
+            <li>If you have duplicate main activity names, the import will fail - ensure unique names</li>
+        </ul>
+    </div>
+
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        
+        <div class="form-group">
+            <label for="csv_file">Select CSV or Excel File:</label>
+            <div class="file-upload-area" id="file-upload-area">
+                <input type="file" id="csv_file" name="csv_file" accept=".csv,.xlsx,.xls" class="form-control" required style="margin-bottom: 10px;">
+                <p style="margin-top: 10px; color: #666; font-size: 14px;">
+                    📁 Drag and drop your file here or click to browse<br>
+                    Supported formats: CSV, Excel (.xlsx, .xls)
+                </p>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="organization_id">Target Organization (Optional):</label>
+            <select id="organization_id" name="organization_id" class="form-control">
+                <option value="">-- Use organization from file data --</option>
+                {% for org in organizations %}
+                    <option value="{{ org.id }}">{{ org.name }} ({{ org.get_type_display }})</option>
+                {% endfor %}
+            </select>
+            <small style="color: #666;">
+                If selected, all sub-activities will be assigned to main activities under this organization.
+                If not selected, organization_id from CSV file will be used.
+            </small>
+        </div>
+
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="dry_run" value="1" checked>
+                <strong>Dry Run (Preview Only)</strong>
+            </label>
+            <small style="color: #666; display: block; margin-top: 5px;">
+                Check this to preview the import without saving to database. Uncheck for actual import.
+            </small>
+        </div>
+
+        <div class="form-group" style="text-align: center; margin-top: 30px;">
+            <button type="submit" class="btn btn-primary">
+                🚀 Start Import Process
+            </button>
+            <a href="../../" class="btn btn-secondary">
+                ← Back to Sub-Activities
+            </a>
+        </div>
+    </form>
+    
+    <div style="margin-top: 30px; padding: 15px; background-color: #f8f9fa; border-radius: 4px;">
+        <h4>Quick Test:</h4>
+        <p>To test if everything works, try downloading the template and uploading it directly (it has sample data).</p>
+        <p><strong>Organization dropdown has {{ organizations|length }} organizations available.</strong></p>
+    </div>
+</div>
+
+<script>
+// Debug function to show form data
+function debugForm() {
+    const form = document.querySelector('form');
+    const formData = new FormData(form);
+    console.log('Form data:');
+    for (let pair of formData.entries()) {
+        console.log(pair[0] + ': ' + pair[1]);
+    }
+}
+
+// File upload drag and drop functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const fileUploadArea = document.getElementById('file-upload-area');
+    const fileInput = document.getElementById('csv_file');
+    const form = document.querySelector('form');
+    
+    // Debug form submission
+    form.addEventListener('submit', function(e) {
+        const fileInput = document.getElementById('csv_file');
+        const orgSelect = document.getElementById('organization_id');
+        
+        console.log('Form submitting...');
+        console.log('File selected:', fileInput.files.length > 0 ? fileInput.files[0].name : 'No file');
+        console.log('Organization selected:', orgSelect.value || 'None');
+        
+        if (fileInput.files.length === 0) {
+            e.preventDefault();
+            alert('Please select a file to upload!');
+            return false;
+        }
+        
+        debugForm();
+    });
+    
+    // Test organization dropdown
+    const orgSelect = document.getElementById('organization_id');
+    orgSelect.addEventListener('change', function() {
+        console.log('Organization selected:', this.value, this.options[this.selectedIndex].text);
+    });
+
+    // Prevent default drag behaviors
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        fileUploadArea.addEventListener(eventName, preventDefaults, false);
+        document.body.addEventListener(eventName, preventDefaults, false);
+    });
+
+    // Highlight drop area when item is dragged over it
+    ['dragenter', 'dragover'].forEach(eventName => {
+        fileUploadArea.addEventListener(eventName, highlight, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        fileUploadArea.addEventListener(eventName, unhighlight, false);
+    });
+
+    // Handle dropped files
+    fileUploadArea.addEventListener('drop', handleDrop, false);
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    function highlight(e) {
+        fileUploadArea.classList.add('dragover');
+    }
+
+    function unhighlight(e) {
+        fileUploadArea.classList.remove('dragover');
+    }
+
+    function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+
+        if (files.length > 0) {
+            fileInput.files = files;
+            updateFileDisplay(files[0]);
+        }
+    }
+
+    // Update file display when file is selected
+    fileInput.addEventListener('change', function(e) {
+        if (e.target.files.length > 0) {
+            updateFileDisplay(e.target.files[0]);
+        }
+    });
+
+    function updateFileDisplay(file) {
+        const fileUploadArea = document.getElementById('file-upload-area');
+        fileUploadArea.innerHTML = `
+            <p style="color: #28a745; font-weight: bold;">✅ File Selected: ${file.name}</p>
+            <p style="color: #666; font-size: 14px;">Size: ${(file.size / 1024).toFixed(1)} KB</p>
+            <p style="color: #666; font-size: 12px;">Click to change file</p>
+        `;
+    }
+});
+</script>
+{% endblock %}

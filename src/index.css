@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Organogram specific styles */
+.organogram {
+  max-height: 600px;
+}
+
+.organogram-container {
+  min-width: 100%;
+}
+
+/* Organization chart specific styles */
+.organization-chart {
+  max-height: 600px;
+  overflow: auto;
+  width: 100%;
+}
+
+/* Custom scrollbar for better UX */
+.organogram::-webkit-scrollbar,
+.organization-chart::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.organogram::-webkit-scrollbar-track,
+.organization-chart::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+.organogram::-webkit-scrollbar-thumb,
+.organization-chart::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 10px;
+}
+
+.organogram::-webkit-scrollbar-thumb:hover,
+.organization-chart::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
