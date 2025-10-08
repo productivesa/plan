@@ -41,3 +41,14 @@
 .organization-chart::-webkit-scrollbar-thumb:hover {
   background: #9ca3af;
 }
+
+/* Print styles */
+@media print {
+  body {
+    background: white;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+}
