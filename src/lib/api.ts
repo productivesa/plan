@@ -7,6 +7,7 @@ import type { AuthState } from '../types/user';
 // Create a base API instance
 export const api = axios.create({
   baseURL: '/api',
+  timeout: 25000,
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json, */*',

@@ -88,20 +88,27 @@ const EvaluatorDashboard: React.FC = () => {
   }, [navigate]);
 
   // Optimized pending plans query - fetch SUBMITTED status plans immediately
-  const { data: pendingPlans, isLoading: loadingPending, refetch } = useQuery({
+  const { data: pendingPlans, isLoading: loadingPending, refetch, error: pendingError } = useQuery({
     queryKey: ['evaluator-pending-plans', userOrgIds, currentEvaluatorIds],
     queryFn: async () => {
       if (userOrgIds.length === 0 || currentEvaluatorIds.length === 0) return { data: [] };
 
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000);
+
         const response = await api.get('/plans/', {
           params: {
             status: 'SUBMITTED',
             organization: userOrgIds.join(','),
-            limit: 50
-          }
+            limit: 25,
+            fields: 'id,status,organization,planner_name,submitted_at,from_date,to_date,reviews'
+          },
+          signal: controller.signal,
+          timeout: 20000
         });
 
+        clearTimeout(timeoutId);
         const plans = response.data?.results || response.data || [];
 
         // Client-side filter: must be SUBMITTED status and NOT reviewed by current evaluator
@@ -126,8 +133,12 @@ const EvaluatorDashboard: React.FC = () => {
         }));
 
         return { data: plansWithNames };
-      } catch (error) {
-        console.error('Error fetching pending reviews:', error);
+      } catch (error: any) {
+        if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+          console.warn('Request timeout - using cached data if available');
+        } else {
+          console.error('Error fetching pending reviews:', error);
+        }
         return { data: [] };
       }
     },
@@ -136,38 +147,61 @@ const EvaluatorDashboard: React.FC = () => {
     gcTime: 60000,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
-    retry: 2
+    retry: (failureCount, error: any) => {
+      if (error?.response?.status === 504) return failureCount < 1;
+      if (error?.code === 'ECONNABORTED') return false;
+      return failureCount < 2;
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000)
   });
 
   // Fetch reviewed plans with proper deduplication - only when tab is active
-  const { data: reviewedPlans, isLoading: loadingReviewed } = useQuery({
+  const { data: reviewedPlans, isLoading: loadingReviewed, error: reviewedError } = useQuery({
     queryKey: ['evaluator-reviewed-plans', userOrgIds, currentEvaluatorIds],
     queryFn: async () => {
       if (userOrgIds.length === 0 || currentEvaluatorIds.length === 0) return { data: [] };
 
       try {
+        const controller1 = new AbortController();
+        const controller2 = new AbortController();
+        const timeoutId1 = setTimeout(() => controller1.abort(), 20000);
+        const timeoutId2 = setTimeout(() => controller2.abort(), 20000);
+
         // Fetch plans with APPROVED or REJECTED status
-        const [approvedRes, rejectedRes] = await Promise.all([
+        const [approvedRes, rejectedRes] = await Promise.allSettled([
           api.get('/plans/', {
             params: {
               status: 'APPROVED',
               organization: userOrgIds.join(','),
-              limit: 50
-            }
+              limit: 25,
+              fields: 'id,status,organization,planner_name,from_date,to_date,reviews,updated_at'
+            },
+            signal: controller1.signal,
+            timeout: 20000
           }),
           api.get('/plans/', {
             params: {
               status: 'REJECTED',
               organization: userOrgIds.join(','),
-              limit: 50
-            }
+              limit: 25,
+              fields: 'id,status,organization,planner_name,from_date,to_date,reviews,updated_at'
+            },
+            signal: controller2.signal,
+            timeout: 20000
           })
         ]);
 
-        const allPlans = [
-          ...(approvedRes.data?.results || approvedRes.data || []),
-          ...(rejectedRes.data?.results || rejectedRes.data || [])
-        ];
+        clearTimeout(timeoutId1);
+        clearTimeout(timeoutId2);
+
+        const approvedPlans = approvedRes.status === 'fulfilled'
+          ? (approvedRes.value.data?.results || approvedRes.value.data || [])
+          : [];
+        const rejectedPlans = rejectedRes.status === 'fulfilled'
+          ? (rejectedRes.value.data?.results || rejectedRes.value.data || [])
+          : [];
+
+        const allPlans = [...approvedPlans, ...rejectedPlans];
 
         // Filter and deduplicate plans
         const uniquePlansMap = new Map();
@@ -190,8 +224,12 @@ const EvaluatorDashboard: React.FC = () => {
         });
 
         return { data: Array.from(uniquePlansMap.values()) };
-      } catch (error) {
-        console.error('Error fetching reviewed plans:', error);
+      } catch (error: any) {
+        if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+          console.warn('Reviewed plans request timeout - using cached data if available');
+        } else {
+          console.error('Error fetching reviewed plans:', error);
+        }
         return { data: [] };
       }
     },
@@ -200,7 +238,12 @@ const EvaluatorDashboard: React.FC = () => {
     gcTime: 300000,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
-    retry: 2
+    retry: (failureCount, error: any) => {
+      if (error?.response?.status === 504) return failureCount < 1;
+      if (error?.code === 'ECONNABORTED') return false;
+      return failureCount < 2;
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000)
   });
 
   // Memoized statistics to avoid recalculation
@@ -392,6 +435,21 @@ const EvaluatorDashboard: React.FC = () => {
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center text-red-700">
           <AlertCircle className="h-5 w-5 mr-2" />
           {error}
+        </div>
+      )}
+
+      {(pendingError || reviewedError) && (
+        <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+          <div className="flex items-start">
+            <AlertCircle className="h-5 w-5 text-amber-600 mr-2 mt-0.5" />
+            <div>
+              <h3 className="text-sm font-medium text-amber-800">Connection Issue</h3>
+              <p className="text-sm text-amber-700 mt-1">
+                The server is taking longer than expected to respond. This might be due to high load or network issues.
+                Please try refreshing the page or contact support if the problem persists.
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
