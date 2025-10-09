@@ -33,47 +33,46 @@ const EvaluatorDashboard: React.FC = () => {
           navigate('/login');
           return;
         }
-        
-        // Pre-fetch organization names immediately for better performance
-        try {
-          const orgsResponse = await organizations.getAll();
-          const orgMap: Record<string, string> = {};
-          if (orgsResponse?.data && Array.isArray(orgsResponse.data)) {
-            orgsResponse.data.forEach((org: any) => {
-              if (org?.id) {
-                orgMap[String(org.id)] = org.name;
-              }
-            });
-            setOrganizationsMap(orgMap);
-            console.log('Pre-fetched organization names:', Object.keys(orgMap).length);
-          }
-        } catch (orgError) {
-          console.warn('Failed to pre-fetch organizations:', orgError);
+
+        if (!isEvaluator(authData.userOrganizations)) {
+          setError('You do not have permission to access the evaluator dashboard');
+          setIsInitialLoad(false);
+          return;
         }
-        
+
         // Get user's organization IDs for filtering
         if (authData.userOrganizations && authData.userOrganizations.length > 0) {
           const orgIds = authData.userOrganizations.map(org => org.organization);
           setUserOrgIds(orgIds);
-          
+
           // Get current user's OrganizationUser IDs (evaluator IDs)
           const evaluatorIds = authData.userOrganizations
             .filter(org => org.role === 'EVALUATOR')
             .map(org => org.id);
           setCurrentEvaluatorIds(evaluatorIds);
-          console.log('Current evaluator OrganizationUser IDs:', evaluatorIds);
-          
+
           // Check if user is only an evaluator (no other roles)
           const roles = authData.userOrganizations.map(org => org.role);
-          const isOnlyEvaluator = roles.includes('EVALUATOR') && 
-                                !roles.includes('ADMIN') && 
+          const isOnlyEvaluator = roles.includes('EVALUATOR') &&
+                                !roles.includes('ADMIN') &&
                                 !roles.includes('PLANNER');
           setIsEvaluatorOnly(isOnlyEvaluator);
-        }
-        
-        if (!isEvaluator(authData.userOrganizations)) {
-          setError('You do not have permission to access the evaluator dashboard');
-          return;
+
+          // Pre-fetch organization names after setting up auth
+          try {
+            const orgsResponse = await organizations.getAll();
+            const orgMap: Record<string, string> = {};
+            if (orgsResponse?.data && Array.isArray(orgsResponse.data)) {
+              orgsResponse.data.forEach((org: any) => {
+                if (org?.id) {
+                  orgMap[String(org.id)] = org.name;
+                }
+              });
+              setOrganizationsMap(orgMap);
+            }
+          } catch (orgError) {
+            console.warn('Failed to pre-fetch organizations:', orgError);
+          }
         }
 
         setIsAuthChecked(true);
@@ -84,21 +83,17 @@ const EvaluatorDashboard: React.FC = () => {
         setIsInitialLoad(false);
       }
     };
-    
+
     checkPermissions();
   }, [navigate]);
 
   // Optimized pending plans query - fetch SUBMITTED status plans immediately
   const { data: pendingPlans, isLoading: loadingPending, refetch } = useQuery({
-    queryKey: ['evaluator-pending-plans', userOrgIds, currentEvaluatorIds, 'SUBMITTED'],
+    queryKey: ['evaluator-pending-plans', userOrgIds, currentEvaluatorIds],
     queryFn: async () => {
       if (userOrgIds.length === 0 || currentEvaluatorIds.length === 0) return { data: [] };
-      
+
       try {
-        if (isInitialLoad) {
-          console.log('Initial load: Fetching SUBMITTED plans for evaluator organizations:', userOrgIds);
-        }
-        
         const response = await api.get('/plans/', {
           params: {
             status: 'SUBMITTED',
@@ -106,139 +101,106 @@ const EvaluatorDashboard: React.FC = () => {
             limit: 50
           }
         });
-        
+
         const plans = response.data?.results || response.data || [];
-        if (isInitialLoad) {
-          console.log(`Found ${plans.length} SUBMITTED plans from organizations`);
-        }
-        
+
         // Client-side filter: must be SUBMITTED status and NOT reviewed by current evaluator
         const filteredPlans = plans.filter((plan: any) => {
-          // Must be SUBMITTED status
-          if (plan.status !== 'SUBMITTED') {
-            return false;
-          }
-          
+          if (plan.status !== 'SUBMITTED') return false;
+
           // Must NOT have been reviewed by current evaluator
           if (plan.reviews && Array.isArray(plan.reviews)) {
-            const hasReviewFromCurrentEvaluator = plan.reviews.some((review: any) => {
-              const reviewerOrgUserId = review.evaluator;
-              const isCurrentEvaluator = currentEvaluatorIds.includes(reviewerOrgUserId);
-              return isCurrentEvaluator;
-            });
-            
-            if (hasReviewFromCurrentEvaluator) {
-              return false;
-            }
+            return !plan.reviews.some((review: any) =>
+              currentEvaluatorIds.includes(review.evaluator)
+            );
           }
-          
+
           return true;
         });
-        
-        if (isInitialLoad) {
-          console.log(`Filtered to ${filteredPlans.length} truly pending SUBMITTED plans`);
-        }
-        
-        // Add organization names from pre-fetched map with fallback
+
+        // Add organization names from pre-fetched map
         const plansWithNames = filteredPlans.map((plan: any) => ({
           ...plan,
-          organizationName: organizationsMap[String(plan.organization)] || 
-                           organizationsMap[plan.organization] || 
+          organizationName: organizationsMap[String(plan.organization)] ||
                            `Organization ${plan.organization}`
         }));
-        
+
         return { data: plansWithNames };
       } catch (error) {
         console.error('Error fetching pending reviews:', error);
-        throw error;
+        return { data: [] };
       }
     },
     enabled: isAuthChecked && userOrgIds.length > 0 && currentEvaluatorIds.length > 0,
-    staleTime: 5000, // Cache for 5 seconds in production
-    cacheTime: 30000, // Keep in cache for 30 seconds
+    staleTime: 30000,
+    gcTime: 60000,
     refetchOnWindowFocus: false,
-    refetchOnMount: true,
-    retry: 1,
-    keepPreviousData: true, // Show previous data while refreshing
-    suspense: false
+    refetchOnMount: false,
+    retry: 2
   });
 
-  // Fetch reviewed plans with proper deduplication
+  // Fetch reviewed plans with proper deduplication - only when tab is active
   const { data: reviewedPlans, isLoading: loadingReviewed } = useQuery({
     queryKey: ['evaluator-reviewed-plans', userOrgIds, currentEvaluatorIds],
     queryFn: async () => {
       if (userOrgIds.length === 0 || currentEvaluatorIds.length === 0) return { data: [] };
-      
+
       try {
-        console.log('Fetching reviewed plans for evaluator organizations:', userOrgIds);
-        
-        // Fetch all plans from user organizations with APPROVED or REJECTED status
-        const response = await api.get('/plans/', {
-          params: {
-            organization: userOrgIds.join(','),
-            limit: 100 // Increased limit to ensure we get all plans
-          }
-        });
-        
-        const allPlans = response.data?.results || response.data || [];
-        console.log(`Found ${allPlans.length} total plans from user organizations`);
-        
+        // Fetch plans with APPROVED or REJECTED status
+        const [approvedRes, rejectedRes] = await Promise.all([
+          api.get('/plans/', {
+            params: {
+              status: 'APPROVED',
+              organization: userOrgIds.join(','),
+              limit: 50
+            }
+          }),
+          api.get('/plans/', {
+            params: {
+              status: 'REJECTED',
+              organization: userOrgIds.join(','),
+              limit: 50
+            }
+          })
+        ]);
+
+        const allPlans = [
+          ...(approvedRes.data?.results || approvedRes.data || []),
+          ...(rejectedRes.data?.results || rejectedRes.data || [])
+        ];
+
         // Filter and deduplicate plans
         const uniquePlansMap = new Map();
-        
+
         allPlans.forEach((plan: any) => {
-          // Must be APPROVED or REJECTED status
-          if (plan.status !== 'APPROVED' && plan.status !== 'REJECTED') {
-            return;
-          }
-          
-          // Must have been reviewed by current evaluator
           if (plan.reviews && Array.isArray(plan.reviews)) {
-            const hasReviewFromCurrentEvaluator = plan.reviews.some((review: any) => {
-              const reviewerOrgUserId = review.evaluator;
-              const isCurrentEvaluator = currentEvaluatorIds.includes(reviewerOrgUserId);
-              return isCurrentEvaluator;
-            });
-            
-            if (hasReviewFromCurrentEvaluator && !uniquePlansMap.has(plan.id)) {
-              // Add the evaluator's review details for display
-              const currentEvaluatorReview = plan.reviews.find((review: any) => 
-                currentEvaluatorIds.includes(review.evaluator)
-              );
-              
+            const currentEvaluatorReview = plan.reviews.find((review: any) =>
+              currentEvaluatorIds.includes(review.evaluator)
+            );
+
+            if (currentEvaluatorReview && !uniquePlansMap.has(plan.id)) {
               uniquePlansMap.set(plan.id, {
                 ...plan,
+                organizationName: organizationsMap[String(plan.organization)] ||
+                                 `Organization ${plan.organization}`,
                 currentEvaluatorReview
               });
             }
           }
         });
-        
-        const filteredPlans = Array.from(uniquePlansMap.values());
-        console.log(`Filtered and deduplicated to ${filteredPlans.length} reviewed plans`);
-        
-        // Add organization names from pre-fetched map
-        const plansWithNames = filteredPlans.map((plan: any) => ({
-          ...plan,
-          organizationName: organizationsMap[String(plan.organization)] || 
-                           organizationsMap[plan.organization] || 
-                           `Organization ${plan.organization}`
-        }));
-        
-        return { data: plansWithNames };
+
+        return { data: Array.from(uniquePlansMap.values()) };
       } catch (error) {
         console.error('Error fetching reviewed plans:', error);
-        throw error;
+        return { data: [] };
       }
     },
-    enabled: isAuthChecked && userOrgIds.length > 0 && currentEvaluatorIds.length > 0,
-    staleTime: 60000, // Cache for 60 seconds since reviewed plans change less frequently
-    cacheTime: 120000, // Keep in cache for 2 minutes
+    enabled: isAuthChecked && activeTab === 'reviewed' && userOrgIds.length > 0 && currentEvaluatorIds.length > 0,
+    staleTime: 60000,
+    gcTime: 300000,
     refetchOnWindowFocus: false,
-    refetchOnMount: true,
-    retry: 1,
-    keepPreviousData: true,
-    suspense: false
+    refetchOnMount: false,
+    retry: 2
   });
 
   // Memoized statistics to avoid recalculation
